@@ -31,7 +31,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import {fileURLToPath} from "node:url";
+import { fileURLToPath } from "node:url";
 import fs from "fs-extra";
 import ignore from "ignore";
 import archiver from "archiver";
@@ -147,7 +147,7 @@ async function main() {
         // Clean up the temporary directory, even if the build fails.
         if (projectDir) {
             try {
-                await fs.promises.rm(projectDir, {force: true, recursive: true});
+                await fs.promises.rm(projectDir, { force: true, recursive: true });
                 logger.log("info", "Cleaned temporary directory.");
             } catch (err) {
                 logger.log("error", "Failed to clean temporary directory: " + err);
@@ -282,7 +282,7 @@ async function createTemporaryDirectoryWithProjectName(projectName) {
 async function copyFiles(srcDir, destDir, ignoreHandler) {
     try {
         // Read the contents of the source directory to get a list of entries (files and directories).
-        const entries = await fs.promises.readdir(srcDir, {withFileTypes: true});
+        const entries = await fs.promises.readdir(srcDir, { withFileTypes: true });
 
         // Initialize an array to hold the promises returned by recursive calls to copyFiles and copyFile operations.
         const copyOperations = [];
@@ -341,7 +341,7 @@ async function createZipFile(directoryToZip, zipFilePath, containerDirName) {
 
         // Create a new archiver instance with ZIP format and maximum compression level.
         const archive = archiver("zip", {
-            zlib: {level: 9}
+            zlib: { level: 9 }
         });
 
         // Set up an event listener for the 'close' event to resolve the promise when the archiver has finalized.
