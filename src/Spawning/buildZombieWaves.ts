@@ -1,80 +1,93 @@
 import { ILocation } from "@spt/models/eft/common/ILocation";
-import _config from "../../config/config.json";
-import mapConfig from "../../config/mapConfig.json";
-import { configLocations, defaultEscapeTimes } from "./constants";
-import {
-  buildZombie,
-  getHealthBodyPartsByPercentage,
-  zombieTypes,
-} from "./utils";
+import { WildSpawnType } from "@spt/models/eft/common/ILocationBase";
 import { IBots } from "@spt/models/spt/bots/IBots";
 
-export default function buildZombieWaves(
-  config: typeof _config,
-  locationList: ILocation[],
-  bots: IBots
-) {
-  let { debug, zombieWaveDistribution, zombieWaveQuantity, zombieHealth } =
-    config;
+import mapConfig from "../../config/mapConfig.json";
+import { configLocations, defaultEscapeTimes } from "./constants";
+import { buildZombie, getHealthBodyPartsByPercentage, zombieTypes } from "../spawnUtils";
+import { MapSettings, MOARConfig } from "../types";
 
-  const zombieBodyParts = getHealthBodyPartsByPercentage(zombieHealth);
-  zombieTypes.forEach((type) => {
-    bots.types?.[type]?.health?.BodyParts?.forEach((_, index) => {
-      bots.types[type].health.BodyParts[index] = zombieBodyParts;
-    });
-  });
+/**
+ * Builds and injects zombie waves into each map based on configured quantity, distribution, and health.
+ */
+export function buildZombieWaves(
+    config: MOARConfig,
+    locationList: ILocation[],
+    bots: IBots
+): void {
+    const {
+        debug,
+        zombieWaveDistribution,
+        zombieWaveQuantity,
+        zombieHealth
+    } = config;
 
-  for (let indx = 0; indx < locationList.length; indx++) {
-    const location = locationList[indx].base;
-    const mapSettingsList = Object.keys(mapConfig) as Array<
-      keyof typeof mapConfig
-    >;
-    const map = mapSettingsList[indx];
+    const zombieBodyParts = getHealthBodyPartsByPercentage(zombieHealth);
 
-    const { zombieWaveCount } = mapConfig?.[configLocations[indx]];
+    //  Patch zombie health templates safely
+    for (const type of zombieTypes) {
+        const template = bots.types?.[type];
+        const health = template?.health?.BodyParts;
 
-    // if (location.Events?.Halloween2024?.MaxCrowdAttackSpawnLimit)
-    //   location.Events.Halloween2024.MaxCrowdAttackSpawnLimit = 100;
-    // if (location.Events?.Halloween2024?.CrowdCooldownPerPlayerSec)
-    //   location.Events.Halloween2024.CrowdCooldownPerPlayerSec = 60;
-    // if (location.Events?.Halloween2024?.CrowdCooldownPerPlayerSec)
-    //   location.Events.Halloween2024.CrowdsLimit = 10;
-    // if (location.Events?.Halloween2024?.CrowdAttackSpawnParams)
-    //   location.Events.Halloween2024.CrowdAttackSpawnParams = [];
+        if (!health || !Array.isArray(health)) continue;
 
-    if (!zombieWaveCount) return;
+        for (let i = 0; i < health.length; i++) {
+            health[i] = zombieBodyParts;
+        }
 
-    const escapeTimeLimitRatio = Math.round(
-      locationList[indx].base.EscapeTimeLimit / defaultEscapeTimes[map]
-    );
+        if (debug?.enabled) {
+            console.log(`[MOAR] [ZOMBIE] Patched health for bot type: ${type}`);
+        }
+    }
 
-    const zombieTotalWaveCount = Math.round(
-      zombieWaveCount * zombieWaveQuantity * escapeTimeLimitRatio
-    );
+    const mapSettingsList = Object.keys(mapConfig) as Array<keyof typeof mapConfig>;
 
-    config.debug &&
-      escapeTimeLimitRatio !== 1 &&
-      console.log(
-        `${map} Zombie wave count changed from ${zombieWaveCount} to ${zombieTotalWaveCount} due to escapeTimeLimit adjustment`
-      );
+    for (let index = 0; index < locationList.length; index++) {
+        const location = locationList[index].base;
+        const mapId = configLocations[index] as keyof typeof mapConfig;
+        const mapSetting: MapSettings = mapConfig[mapId];
 
-    const zombieWaves = buildZombie(
-      zombieTotalWaveCount,
-      location.EscapeTimeLimit * 60,
-      zombieWaveDistribution,
-      9999
-    );
+        if (!mapSetting?.zombieWaveCount || mapSetting.zombieWaveCount <= 0) {
+            if (debug?.enabled) {
+                console.warn(`[MOAR] [ZOMBIE] Skipping ${mapId} — no valid zombieWaveCount in map config.`);
+            }
+            continue;
+        }
 
-    debug &&
-      console.log(
-        configLocations[indx],
-        " generated ",
-        zombieWaves.length,
-        "Zombies"
-      );
+        const rawEscape = location.EscapeTimeLimit;
+        const baseEscape = defaultEscapeTimes[mapId] ?? 45;
+        const escapeTime = (typeof rawEscape === "number" && !isNaN(rawEscape)) ? rawEscape : baseEscape;
+        const escapeRatio = Math.round(escapeTime / baseEscape);
+        const totalWaves = Math.round(mapSetting.zombieWaveCount * zombieWaveQuantity * escapeRatio);
 
-    location.BossLocationSpawn.push(...zombieWaves);
+        if (debug?.enabled && escapeRatio !== 1) {
+            console.log(`[MOAR] [ZOMBIE] ${mapId} wave scaling: ${mapSetting.zombieWaveCount} × ${zombieWaveQuantity} × ${escapeRatio} = ${totalWaves}`);
+        }
 
-    // console.log(zombieWaves[0], zombieWaves[7]);
-  }
+        const timeLimit = escapeTime * 60;
+        const distribution = zombieWaveDistribution === 1 ? "random" : "even";
+
+        const zombieWaves = buildZombie(
+            totalWaves,
+            timeLimit,
+            distribution,
+            9999 // Use high bot cap to prevent issues on high-density maps
+        );
+
+        if (debug?.enabled) {
+            console.log(`[MOAR] [ZOMBIE] ${mapId} injected ${zombieWaves.length} zombie waves.`);
+        }
+
+        const existing = location.BossLocationSpawn ?? [];
+        const seen = new Set<string>();
+
+        //  Merge and deduplicate by BossName-Zone-Time
+        location.BossLocationSpawn = [...existing, ...zombieWaves].filter(wave => {
+            wave.Time = typeof wave.Time === "number" && !isNaN(wave.Time) ? wave.Time : 0;
+            const key = `${wave.BossName}-${wave.BossZone}-${wave.Time}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
 }

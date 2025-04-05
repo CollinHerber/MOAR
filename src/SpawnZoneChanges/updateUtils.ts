@@ -1,112 +1,126 @@
-import { Ixyz } from "@spt/models/eft/common/Ixyz";
-import { getDistance } from "../Spawning/spawnZoneUtils";
+import fs from "fs";
+import path from "path";
+import { Ixyz } from "../Models/Ixyz";
 
-const fs = require("fs");
-const path = require("path");
-const currentDirectory = process.cwd();
-// Function to update JSON file
+const SPAWN_DIR = path.resolve(__dirname, "../../config/Spawns");
+const LOG_PREFIX = "[MOAR:SpawnUtils]";
+const DELETE_DISTANCE_THRESHOLD = 15;
+const DEBUG = false; // Set to true for debugging logs
+
+export type BotSpawnType = "player" | "pmc" | "scav" | "sniper";
+
+/**
+ * Type-safe JSON file update utility.
+ */
 export const updateJsonFile = <T>(
-  filePath: string,
-  callback: (jsonData) => void,
-  successMessage: string
-) => {
-  // Read the JSON file
-  fs.readFile(filePath, "utf8", (err, data) => {
-    if (err) {
-      console.error("Error reading the file:", err);
-      return;
-    }
-
-    // Parse the JSON data
-    let jsonData;
+    filePath: string,
+    callback: (jsonData: T) => void,
+    successMessage: string
+): void => {
     try {
-      jsonData = JSON.parse(data);
-    } catch (parseError) {
-      console.error("Error parsing JSON data:", parseError);
-      return;
+        const raw = fs.readFileSync(filePath, "utf8");
+        const jsonData = JSON.parse(raw) as T;
+
+        callback(jsonData);
+
+        fs.writeFileSync(filePath, JSON.stringify(jsonData, null, 2), "utf8");
+        console.log(`${LOG_PREFIX} ${successMessage}`);
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`${LOG_PREFIX} Failed to update ${filePath}:`, message);
     }
+};
 
-    callback(jsonData);
+/**
+ * Append a spawn to the correct file for the given type and map.
+ */
+export const updateBotSpawn = (
+    map: string,
+    value: Ixyz,
+    type: BotSpawnType
+): void => {
+    const filePath = path.join(SPAWN_DIR, `${type}Spawns.json`);
+    const key = map.toLowerCase();
 
-    // Update the JSON object
+    updateJsonFile<Record<string, Ixyz[]>>(filePath, (jsonData) => {
+        value.y += 0.5; // Offset Y to prevent ground clipping
+        jsonData[key] ??= [];
+        jsonData[key].push(value);
+    }, `Added ${type} spawn to '${map}'`);
+};
 
-    // Write the updated JSON object back to the file
-    fs.writeFile(
-      filePath,
-      JSON.stringify(jsonData, null, 2),
-      "utf8",
-      (writeError) => {
-        if (writeError) {
-          console.error("Error writing the file:", writeError);
-          return;
+/**
+ * Delete the closest spawn to a given point within a distance threshold.
+ */
+export const deleteBotSpawn = (
+    map: string,
+    value: Ixyz,
+    type: BotSpawnType
+): void => {
+    const filePath = path.join(SPAWN_DIR, `${type}Spawns.json`);
+    const key = map.toLowerCase();
+
+    updateJsonFile<Record<string, Ixyz[]>>(filePath, (jsonData) => {
+        const spawns = jsonData[key];
+        if (!spawns?.length) {
+            console.warn(`${LOG_PREFIX} No ${type} spawns found on '${map}' to delete.`);
+            return;
         }
 
-        console.log(successMessage);
-      }
-    );
-  });
-};
-
-export const updateBotSpawn = (
-  map: string,
-  value: Ixyz,
-  type: "player" | "pmc" | "scav" | "sniper"
-) => {
-  map = map.toLowerCase();
-  updateJsonFile<Ixyz>(
-    `${currentDirectory}/user/mods/DewardianDev-MOAR/config/Spawns/${type}Spawns.json`,
-    (jsonData) => {
-      value.y = value.y + 0.5;
-      if (jsonData[map]) {
-        jsonData[map].push(value);
-      } else {
-        jsonData[map] = [value];
-      }
-    },
-    "Successfully added one bot spawn to " + map
-  );
-};
-
-export const deleteBotSpawn = (
-  map: string,
-  value: Ixyz,
-  type: "player" | "pmc" | "scav" | "sniper"
-) => {
-  map = map.toLowerCase();
-  updateJsonFile<Ixyz>(
-    `${currentDirectory}/user/mods/DewardianDev-MOAR/config/Spawns/${type}Spawns.json`,
-    (jsonData) => {
-      if (jsonData[map]) {
         const { x: X, y: Y, z: Z } = value;
-        let nearest = undefined;
-        let nearDist = Infinity;
-        jsonData[map].forEach(({ x, y, z }, index) => {
-          const dist = getDistance(x, y, z, X, Y, Z);
-          if (dist < nearDist) {
-            nearest = index;
-            nearDist = dist;
-          }
+        let nearestIndex = -1;
+        let shortest = Infinity;
+
+        spawns.forEach(({ x, y, z }, i) => {
+            const dist = Math.sqrt((x - X) ** 2 + (y - Y) ** 2 + (z - Z) ** 2);
+            if (dist < shortest) {
+                shortest = dist;
+                nearestIndex = i;
+            }
         });
 
-        if (nearest) {
-          (jsonData[map] as Ixyz[]).splice(nearest, 1);
+        if (nearestIndex !== -1 && shortest < DELETE_DISTANCE_THRESHOLD) {
+            spawns.splice(nearestIndex, 1);
+            console.log(`${LOG_PREFIX} Deleted ${type} spawn from '${map}' ~${shortest.toFixed(2)}m away`);
         } else {
-          console.log("No nearest spawn on " + map);
+            console.warn(`${LOG_PREFIX} No nearby ${type} spawn within ${DELETE_DISTANCE_THRESHOLD}m on '${map}'. Closest was ${shortest.toFixed(2)}m`);
         }
-      }
-    },
-    "Successfully removed one bot spawn from "
-  );
+    }, `Removed ${type} spawn from '${map}'`);
 };
 
+/**
+ * Deduplicates spawn entries by approximate position hash.
+ */
+function dedupeIxyzArray(points: Ixyz[]): Ixyz[] {
+    const seen = new Set<string>();
+    return points.filter(p => {
+        const key = `${p.x.toFixed(3)}:${p.y.toFixed(3)}:${p.z.toFixed(3)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+/**
+ * Replaces all spawn data for a type across all maps, safely deduplicating input.
+ * Should only be used before the raid starts (never during active play).
+ */
 export const updateAllBotSpawns = (
-  values: Record<string, Ixyz[]>,
-  targetType: string
-) =>
-  updateJsonFile<Ixyz>(
-    `${currentDirectory}/user/mods/DewardianDev-MOAR/config/Spawns/${targetType}.json`,
-    (jsonData) => {
-      Object.keys(jsonData).forEach((map) => (jsonData[map] = values[map]));
-    },
-    "Successfully updated all Spawns"
-  );
+    values: Record<string, Ixyz[]>,
+    targetType: BotSpawnType | string
+): void => {
+    const safeType = targetType.toLowerCase();
+    const filePath = path.join(SPAWN_DIR, `${safeType}Spawns.json`);
+
+    updateJsonFile<Record<string, Ixyz[]>>(filePath, (jsonData) => {
+        for (const [map, rawPoints] of Object.entries(values)) {
+            const deduped = dedupeIxyzArray(rawPoints);
+            jsonData[map] = deduped;
+
+            if (DEBUG) {
+                console.log(`${LOG_PREFIX} [${map}] ${targetType} spawns updated (${deduped.length} points)`);
+            }
+        }
+    }, `Overwrote all ${safeType} spawns (deduplicated)`);
+};
+
