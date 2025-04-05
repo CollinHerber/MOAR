@@ -11,3 +11,5 @@ src/**/*.js.map
 src/*.js.map
 src/**/**.js.map
 src/**/**.js
+
+.idea/
