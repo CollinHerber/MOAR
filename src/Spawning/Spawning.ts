@@ -28,8 +28,9 @@ import buildPmcs from "./buildPmcs";
 import updateSpawnLocations from "./updateSpawnLocations";
 import marksmanChanges from "./marksmanChanges";
 import type { MOARConfig, MOARPresetConfig } from "../types";
+import { EPlayerSide } from "@spt-aki/models/enums/EPlayerSide";
+import { ESpawnCategory } from "@spt-aki/models/enums/ESpawnCategory";
 
-/** Type guard to verify object is a valid MOARConfig */
 function isMOARConfig(obj: unknown): obj is MOARConfig {
     return typeof obj === "object" &&
         obj !== null &&
@@ -49,7 +50,6 @@ export const buildWaves = (container: DependencyContainer): void => {
     const botConfig = configServer.getConfig<IBotConfig>(ConfigTypes.BOT);
     const locationConfig = configServer.getConfig<ILocationConfig>(ConfigTypes.LOCATION);
 
-    // Base location tuning
     locationConfig.rogueLighthouseSpawnTimeSettings.waitTimeSeconds = 60;
     locationConfig.enableBotTypeLimits = false;
     locationConfig.fitLootIntoContainerAttempts = 1;
@@ -73,7 +73,6 @@ export const buildWaves = (container: DependencyContainer): void => {
     const config = rawConfig;
     const preset = cloneDeep(getRandomPresetOrCurrentlySelectedPreset()) as Partial<MOARPresetConfig>;
 
-    // Merge overrideConfig into base config
     for (const [key, override] of Object.entries(globalValues.overrideConfig)) {
         if (key in config && config[key as keyof MOARConfig] !== override) {
             if (config.debug?.enabled) {
@@ -83,7 +82,6 @@ export const buildWaves = (container: DependencyContainer): void => {
         }
     }
 
-    // Merge preset into config
     for (const [key, value] of Object.entries(preset)) {
         if (["label", "description", "enabled"].includes(key)) continue;
         if (config[key as keyof MOARConfig] !== value) {
@@ -102,22 +100,8 @@ export const buildWaves = (container: DependencyContainer): void => {
 
     console.log(`[MOAR] Using preset: ${globalValues.forcedPreset || globalValues.currentPreset}`);
 
-    const locationList = [
-        locations.bigmap,
-        locations.factory4_day,
-        locations.factory4_night,
-        locations.interchange,
-        locations.laboratory,
-        locations.lighthouse,
-        locations.rezervbase,
-        locations.shoreline,
-        locations.tarkovstreets,
-        locations.woods,
-        locations.sandbox,
-        locations.sandbox_high
-    ];
+    const locationList = originalMapList.map(mapName => locations[mapName]);
 
-    // Cache original spawn data per map
     if (!globalValues.locationsBase.length) {
         globalValues.locationsBase = locationList.map(loc => cloneDeep(loc.base));
     } else {
@@ -131,18 +115,24 @@ export const buildWaves = (container: DependencyContainer): void => {
         if (mapId && !globalValues.indexedMapSpawns[mapId]) {
             globalValues.indexedMapSpawns[mapId] = loc.base.SpawnPointParams.map((p: any) => ({
                 ...p,
-                type: p.type || "scav"
+                type: p?.type ?? (
+                    p.Categories?.includes(ESpawnCategory.Player) ? "player"
+                    : p.Categories?.includes(ESpawnCategory.Coop) ? "pmc"
+                    : p.Categories?.includes(ESpawnCategory.Boss) ? "boss"
+                    : "scav"
+                )
             }));
         }
+
+        loc.base.BossLocationSpawn = [];
     }
 
-    // Disable PMC conversion to ensure clean faction spawning
     pmcConfig.convertIntoPmcChance = {
         default: {
             assault: { min: 0, max: 0 },
             cursedassault: { min: 0, max: 0 },
             pmcbot: { min: 0, max: 0 },
-            exusec: { min: 0, max: 0 },
+            exUsec: { min: 0, max: 0 },
             arenafighter: { min: 0, max: 0 },
             arenafighterevent: { min: 0, max: 0 },
             crazyassaultevent: { min: 0, max: 0 }
@@ -152,19 +142,16 @@ export const buildWaves = (container: DependencyContainer): void => {
         rezervbase: { pmcbot: { min: 0, max: 0 } }
     };
 
-    // Adjust behavior if Starting PMCs is on
     if (config.startingPmcs && (!config.randomSpawns || config.spawnSmoothing)) {
         logger.warning("[MOAR] Starting PMCs enabled. Forcing randomSpawns = true, spawnSmoothing = false.");
         config.spawnSmoothing = false;
         config.randomSpawns = true;
     }
 
-    // Difficulty tweaks
     if (advancedConfig.MarksmanDifficultyChanges) {
         marksmanChanges(bots);
     }
 
-    // === Main spawn logic ===
     updateSpawnLocations(locationList, config);
     setEscapeTimeOverrides(locationList, mapConfig, logger, config);
 
@@ -189,7 +176,6 @@ export const buildWaves = (container: DependencyContainer): void => {
 
     enforceSmoothing(locationList, config, logger);
 
-    // Final boss cleanup pass (de-duplication)
     for (const loc of locationList) {
         const seen = new Set<string>();
         loc.base.BossLocationSpawn = (loc.base.BossLocationSpawn ?? []).filter((boss: any) => {
@@ -211,9 +197,14 @@ export const buildWaves = (container: DependencyContainer): void => {
             seen.add(key);
             return true;
         });
+
+        for (const p of loc.base.SpawnPointParams) {
+            if (!p.Categories || !p.Sides) {
+                console.warn(`[MOAR] 🟡 Missing category/side on spawn ${p.Id} in ${loc.base.Id}`);
+            }
+        }
     }
 
-    // Final report
     saveToFile("spawned", locationList.map(loc => ({
         map: loc.base.Id,
         spawns: loc.base.SpawnPointParams?.length ?? 0,

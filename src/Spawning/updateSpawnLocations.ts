@@ -5,6 +5,7 @@ import { getRandomInArray } from "../utils";
 import globalValues from "../GlobalValues";
 import getSortedSpawnPointList from "./spawnZoneUtils";
 import type { MOARConfig } from "../types";
+import { EPlayerSide } from "@spt-aki/models/enums/EPlayerSide";
 
 /**
  * Updates spawn zones to favor player-centric clustering.
@@ -32,7 +33,9 @@ export default function updateSpawnLocations(
         }
 
         const playerSpawns = mapSpawns.filter(spawn =>
-            spawn.type === "player" && spawn.Position && typeof spawn.Position.x === "number"
+            spawn.Categories?.includes("Player") &&
+            spawn.Sides?.some((side: EPlayerSide) => side === EPlayerSide.Usec || side === EPlayerSide.Bear) &&
+            spawn.Position
         );
 
         if (playerSpawns.length === 0) {
@@ -43,17 +46,14 @@ export default function updateSpawnLocations(
         }
 
         const selected = getRandomInArray(playerSpawns);
-        if (!selected?.Position || selected.Position == null) {
+        if (!selected?.Position) {
             if (activeConfig.debug?.enabled) {
                 console.warn(`[MOAR] Invalid selected player spawn for ${mapName}.`);
             }
             continue;
         }
 
-        // Assign selected player spawn — only once and safely
-        if (!globalValues.playerSpawn || !globalValues.playerSpawn.Position) {
-            globalValues.playerSpawn = selected;
-        }
+        globalValues.playerSpawn ??= selected;
 
         const { x, y, z } = selected.Position;
         const sortedSpawns = getSortedSpawnPointList(mapSpawns, x, y, z);
@@ -61,7 +61,13 @@ export default function updateSpawnLocations(
         const clusteredPlayerSpawns: ISpawnPointParam[] = [];
 
         for (const spawn of sortedSpawns) {
-            if (spawn.type !== "player" || !spawn.Position) continue;
+            if (
+                !spawn.Categories?.includes("Player") ||
+                !spawn.Sides?.some((side: EPlayerSide) => side === EPlayerSide.Usec || side === EPlayerSide.Bear) ||
+                !spawn.Position
+            ) {
+                continue;
+            }
 
             const dx = spawn.Position.x - x;
             const dy = spawn.Position.y - y;
@@ -73,14 +79,11 @@ export default function updateSpawnLocations(
             }
         }
 
-        const nonPlayerSpawns = sortedSpawns.filter(spawn => spawn.type !== "player");
+        const nonPlayerSpawns = sortedSpawns.filter(spawn =>
+            !spawn.Categories?.includes("Player") ||
+            !spawn.Sides?.some((side: EPlayerSide) => side === EPlayerSide.Usec || side === EPlayerSide.Bear)
+        );
 
-        // Defensive: Ensure structure exists before writing
-        if (!locationList[index]?.base?.SpawnPointParams) {
-            locationList[index].base.SpawnPointParams = [];
-        }
-
-        // Overwrite the spawn list with updated clustering
         locationList[index].base.SpawnPointParams = [
             ...clusteredPlayerSpawns,
             ...nonPlayerSpawns

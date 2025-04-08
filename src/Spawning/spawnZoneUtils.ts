@@ -8,26 +8,25 @@ import ScavSpawns from "../../config/Spawns/scavSpawns.json";
 import SniperSpawns from "../../config/Spawns/sniperSpawns.json";
 
 import crypto from "crypto";
+import { EPlayerSide } from "@spt-aki/models/enums/EPlayerSide";
+import { ESpawnCategory } from "@spt-aki/models/enums/ESpawnCategory";
 
 /** === Types === */
-type Side = "Savage" | "Pmc";
-type Category = "Player" | "Bot" | "Coop" | "Group" | "Opposite";
+export type Side = EPlayerSide;
+type Category = ESpawnCategory;
 
 /** === Constants === */
 const DEFAULT_RADIUS = config.spawnRadius ?? 20;
 const DEFAULT_DELAY = config.spawnDelay ?? 4;
 
-/** Generate a UUIDv4 string */
 function uuidv4(): string {
     return crypto.randomUUID();
 }
 
-/** Random rotation from 0–359 degrees */
 function random360(): number {
     return Math.floor(Math.random() * 360);
 }
 
-/** Safe Ixyz conversion from any unknown object */
 function safeIxyz(input: unknown): Ixyz {
     if (typeof input === "object" && input !== null && "x" in input && "y" in input && "z" in input) {
         return createIxyz(input as { x: number; y: number; z: number });
@@ -37,7 +36,6 @@ function safeIxyz(input: unknown): Ixyz {
     return createIxyz({ x: 0, y: 0, z: 0 });
 }
 
-/** Find the closest BotZoneName to a given position */
 export function getClosestZone(points: ISpawnPointParam[], x: number, y: number, z: number): string {
     let closest: ISpawnPointParam | undefined;
     let minDistance = Infinity;
@@ -62,7 +60,6 @@ export function getClosestZone(points: ISpawnPointParam[], x: number, y: number,
     return result;
 }
 
-/** Sort spawn points by distance to a given coordinate */
 export function getSortedSpawnPointList(spawns: ISpawnPointParam[], x: number, y: number, z: number): ISpawnPointParam[] {
     return spawns.slice().sort((a, b) => {
         const distA = (a.Position.x - x) ** 2 + (a.Position.y - y) ** 2 + (a.Position.z - z) ** 2;
@@ -71,7 +68,6 @@ export function getSortedSpawnPointList(spawns: ISpawnPointParam[], x: number, y
     });
 }
 
-/** Create a new ISpawnPointParam with standard settings */
 function createSpawnPoint(
     coords: Ixyz,
     zone: string,
@@ -97,8 +93,6 @@ function createSpawnPoint(
     };
 }
 
-// === Injectors ===
-
 export const AddCustomBotSpawnPoints = (spawnParams: ISpawnPointParam[], map: keyof typeof ScavSpawns): ISpawnPointParam[] => {
     const custom = ScavSpawns[map];
     if (!custom?.length) {
@@ -107,7 +101,7 @@ export const AddCustomBotSpawnPoints = (spawnParams: ISpawnPointParam[], map: ke
     }
 
     const newSpawns = custom.map((coords) =>
-        createSpawnPoint(safeIxyz(coords), getClosestZone(spawnParams, coords.x, coords.y, coords.z), ["Bot"], ["Savage"])
+        createSpawnPoint(safeIxyz(coords), getClosestZone(spawnParams, coords.x, coords.y, coords.z), [ESpawnCategory.Bot], [EPlayerSide.Savage])
     );
 
     return [...spawnParams, ...newSpawns];
@@ -120,8 +114,15 @@ export const AddCustomPmcSpawnPoints = (spawnParams: ISpawnPointParam[], map: ke
         return spawnParams;
     }
 
-    const newSpawns = custom.map((coords: Ixyz) =>
-        createSpawnPoint(safeIxyz(coords), getClosestZone(spawnParams, coords.x, coords.y, coords.z), ["Coop", Math.random() > 0.5 ? "Group" : "Opposite"], ["Pmc"])
+    const newSpawns = custom.map((coords: Ixyz, index: number) =>
+        createSpawnPoint(
+            safeIxyz(coords),
+            `coop_pmc_zone_${map}_${index}`,
+            [ESpawnCategory.Coop],
+            [EPlayerSide.Usec, EPlayerSide.Bear],
+            DEFAULT_RADIUS,
+            2000 + index
+        )
     );
 
     return [...spawnParams, ...newSpawns];
@@ -136,41 +137,49 @@ export const AddCustomSniperSpawnPoints = (spawnParams: ISpawnPointParam[], map:
 
     const newSpawns = custom.map((coords, i: number) => {
         const zone = getClosestZone(spawnParams, coords.x, coords.y, coords.z);
-        return createSpawnPoint(safeIxyz(coords), zone || `custom_snipe_${i}`, ["Bot"], ["Savage"]);
+        return createSpawnPoint(safeIxyz(coords), zone || `custom_snipe_${i}`, [ESpawnCategory.Bot], [EPlayerSide.Savage]);
     });
 
     return [...spawnParams, ...newSpawns];
 };
 
-/** Coop-safe player spawn builder (deduplicated, unique CorePointId, isolated BotZoneName) */
-export const BuildCustomPlayerSpawnPoints = (spawnParams: ISpawnPointParam[], map: keyof typeof PlayerSpawns): ISpawnPointParam[] => {
+export const BuildCustomPlayerSpawnPoints = (
+    spawnParams: ISpawnPointParam[],
+    map: keyof typeof PlayerSpawns
+): ISpawnPointParam[] => {
     const custom = PlayerSpawns[map];
-    const existing = spawnParams.filter(p => p.Categories?.includes("Player") && p.Infiltration);
+    const existing = spawnParams.filter(p => p.Categories?.includes(ESpawnCategory.Player) && p.Infiltration);
 
     if (!custom?.length) {
         if (config.debug) console.warn(`[MOAR] No custom Player spawns for ${map}`);
         return existing;
     }
 
-    const baseZone = `coop_player_zone_${map}`;
+    const groupZone = `coop_player_group_all`; // All players grouped
     const newSpawns = custom.map((coords, index: number) =>
-        createSpawnPoint(safeIxyz(coords), `${baseZone}_${index}`, ["Player"], ["Pmc"], 1, 1000 + index)
+        createSpawnPoint(
+            safeIxyz(coords),
+            `${groupZone}_${index}`,
+            [ESpawnCategory.Player],
+            [EPlayerSide.Usec, EPlayerSide.Bear],
+            1,
+            1000 + index
+        )
     );
 
     if (config.debug) {
-        console.log(`[MOAR] Injected ${newSpawns.length} Coop player spawns into ${map}`);
+        console.log(`[MOAR] Injected ${newSpawns.length} universal Coop player spawns into ${map}`);
     }
 
     return [...existing, ...newSpawns];
 };
 
-/** Removes spawns that are too close together (unless player spawn) */
 export function cleanClosest(spawns: ISpawnPointParam[], mapIndex: number, keepPlayers = false): ISpawnPointParam[] {
     const filtered: ISpawnPointParam[] = [];
     const thresholdSq = Math.pow(5 + mapIndex * 0.5, 2);
 
     for (const spawn of spawns) {
-        if (keepPlayers && spawn.Categories?.includes("Player")) {
+        if (keepPlayers && spawn.Categories?.includes(ESpawnCategory.Player)) {
             filtered.push(spawn);
             continue;
         }
@@ -190,7 +199,6 @@ export function cleanClosest(spawns: ISpawnPointParam[], mapIndex: number, keepP
     return filtered;
 }
 
-/** Culls custom spawn positions if they're too close to vanilla points */
 export function removeClosestSpawnsFromCustomBots(
     source: Record<string, Ixyz[]>,
     targetPoints: ISpawnPointParam[],
